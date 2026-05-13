@@ -1,4 +1,8 @@
 User-agent: *
 Disallow: /_astro/
 
+<<<<<<< HEAD
 Sitemap: https://fuwari.vercel.app/sitemap-index.xml
+=======
+Sitemap: https://2002i.github.io/sitemap-index.xml
+>>>>>>> 9872aa9 (合并远程更改并解决冲突)
