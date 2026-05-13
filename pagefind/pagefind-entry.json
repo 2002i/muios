@@ -1,5 +1,1 @@
-<<<<<<< HEAD
-{"version":"1.4.0","languages":{"zh-cn":{"hash":"zh-cn_ac83981af9746","wasm":null,"page_count":5}},"include_characters":["_","‿","⁀","⁔","︳","︴","﹍","﹎","﹏","＿"]}
-=======
-{"version":"1.4.0","languages":{"zh-cn":{"hash":"zh-cn_abc9cfc98183e","wasm":null,"page_count":5}},"include_characters":["_","‿","⁀","⁔","︳","︴","﹍","﹎","﹏","＿"]}
->>>>>>> 9872aa9 (合并远程更改并解决冲突)
+{"version":"1.4.0","languages":{"zh-cn":{"hash":"zh-cn_f97eb6369964b","wasm":null,"page_count":5}},"include_characters":["_","‿","⁀","⁔","︳","︴","﹍","﹎","﹏","＿"]}
