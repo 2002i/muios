@@ -1,4 +1,4 @@
 User-agent: *
 Disallow: /_astro/
 
-Sitemap: https://2002i.github.io/sitemap-index.xml
+Sitemap: http://muios.icu/sitemap-index.xml
