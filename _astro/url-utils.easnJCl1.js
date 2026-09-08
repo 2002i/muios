@@ -1,0 +1,1 @@
+import"./zh_TW.D-gC6DH-.js";function i(e,n){const o=e.replace(/^\/|\/$/g,"").toLowerCase(),t=n.replace(/^\/|\/$/g,"").toLowerCase();return o===t}function r(...e){return e.join("/").replace(/\/+/g,"/")}function s(e){return a(`/posts/?name=${encodeURIComponent(e)}`)}function a(e){return r("","/",e)}export{s as g,i as p,a as u};
