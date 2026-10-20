@@ -131,13 +131,7 @@
 			.ms-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:.12rem}
 			.ms-key{aspect-ratio:1;min-width:0;display:grid;place-items:center;border:1px solid rgba(127,127,127,.12);border-radius:.28rem;background:var(--btn-regular-bg,rgba(127,127,127,.08));font-size:clamp(.42rem,.75vw,.62rem);font-weight:800}
 			.ms-key.active-key{background:var(--primary,#7c3aed);border-color:transparent;color:white;transform:scale(1.04)}
-			.ms-floating-player{position:fixed;right:5.5rem;bottom:1.5rem;z-index:9999;display:flex;align-items:center;gap:.55rem;min-width:17rem;max-width:calc(100vw - 7rem);padding:.65rem .8rem;border:1px solid rgba(127,127,127,.16);border-radius:1rem;background:color-mix(in oklch,var(--card-bg,#fff) 88%,transparent);box-shadow:0 14px 40px rgba(0,0,0,.18);backdrop-filter:blur(18px);opacity:0;pointer-events:none;transform:translateY(calc(100% + 1rem));transition:opacity .2s ease,transform .25s ease}
-			.ms-floating-player.is-visible{opacity:1;pointer-events:auto;transform:translateY(0)}
-			.ms-floating-player strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--primary,#7c3aed)}
-			.ms-floating-player button{height:2.35rem;padding:0 .75rem;border:0;border-radius:.7rem;background:var(--enter-btn-bg,rgba(127,127,127,.12));color:var(--btn-content,inherit);font-weight:800;cursor:pointer}
-			.ms-floating-player button:disabled{opacity:.45;cursor:not-allowed}
-			.ms-floating-status{margin-left:auto;white-space:nowrap;font-size:.75rem;color:var(--text-secondary,#6b7280)}
-			@media(max-width:480px){.ms-header{align-items:flex-start}.ms-controls{width:100%;gap:.3rem}.ms-controls button,.ms-controls select{padding:0 .55rem}.ms-status{margin-left:auto}.ms-floating-player{right:5.5rem;bottom:1.5rem;width:calc(100vw - 7rem);min-width:0;gap:.3rem;padding:.5rem .55rem}.ms-floating-player strong{display:none}.ms-floating-player button{flex:1;min-width:0;padding:0 .45rem}.ms-floating-status{margin-left:0}}
+			@media(max-width:480px){.ms-header{align-items:flex-start;gap:.55rem;margin-bottom:.75rem;padding:.6rem}.ms-title{gap:.05rem}.ms-heading{font-size:.9rem}.ms-audio-state{font-size:.68rem}.ms-controls{width:100%;gap:.25rem}.ms-controls button,.ms-controls select{height:2rem;padding:0 .45rem;border-radius:.55rem;font-size:.75rem}.ms-status{min-width:3.25rem;margin-left:auto;font-size:.7rem}.ms-beats{gap:.3rem}.ms-card{padding:.24rem;border-radius:.55rem}.ms-card-header{font-size:.52rem}.ms-grid{gap:.08rem}.ms-key{border-radius:.22rem;font-size:.42rem}}
 		`;
 		container.appendChild(style);
 	}
@@ -162,14 +156,7 @@
 		header.innerHTML = '<div class="ms-title"><div class="ms-heading">模拟光遇按键</div><div class="ms-audio-state">准备音色缓存…</div></div><div class="ms-controls"><select data-action="instrument" aria-label="选择音色"><option value="piano">钢琴</option><option value="guitar">吉他</option></select><button type="button" data-action="play" disabled>播放</button><button type="button" data-action="pause" disabled>暂停</button><button type="button" data-action="stop" disabled>停止</button><span class="ms-status"></span></div>';
 		const beatsContainer = document.createElement("div");
 		beatsContainer.className = "ms-beats";
-		const floatingPlayer = document.createElement("div");
-		floatingPlayer.className = "ms-floating-player";
-		floatingPlayer.setAttribute("role", "region");
-		floatingPlayer.setAttribute("aria-label", "悬浮播放控制");
-		floatingPlayer.setAttribute("aria-hidden", "true");
-		floatingPlayer.inert = true;
-		floatingPlayer.innerHTML = '<strong>琴谱播放</strong><button type="button" data-floating-action="play" disabled>播放</button><button type="button" data-floating-action="pause" disabled>暂停</button><button type="button" data-floating-action="stop" disabled>停止</button><span class="ms-floating-status"></span>';
-		root.append(header, beatsContainer, floatingPlayer);
+		root.append(header, beatsContainer);
 		container.appendChild(root);
 
 		const keyLayout = "abcdefghijklmno".split("");
@@ -199,28 +186,29 @@
 		const instrumentSelect = header.querySelector('[data-action="instrument"]');
 		const status = header.querySelector(".ms-status");
 		const audioStatus = header.querySelector(".ms-audio-state");
-		const floatingPlayButton = floatingPlayer.querySelector('[data-floating-action="play"]');
-		const floatingPauseButton = floatingPlayer.querySelector('[data-floating-action="pause"]');
-		const floatingStopButton = floatingPlayer.querySelector('[data-floating-action="stop"]');
-		const floatingStatus = floatingPlayer.querySelector(".ms-floating-status");
+		const floatingControls = document.getElementById("floating-music-controls");
+		const floatingPlayButton = document.getElementById("floating-play-btn");
+		const floatingPauseButton = document.getElementById("floating-pause-btn");
+		const floatingStopButton = document.getElementById("floating-stop-btn");
+		const floatingStatus = document.getElementById("floating-music-status");
+		if (!floatingControls || !floatingPlayButton || !floatingPauseButton || !floatingStopButton || !floatingStatus) {
+			throw new Error("悬浮播放组件未加载");
+		}
+		floatingControls.hidden = false;
+		window.__musicSimFloatingAbort?.abort();
+		const floatingAbort = new AbortController();
+		window.__musicSimFloatingAbort = floatingAbort;
 		let current = 0;
 		let playing = false;
 		let timeoutId = 0;
 		let audioReady = false;
 		let audioBank = new Map();
-		let headerVisible = true;
 		const audioBaseUrl = container.dataset.audioBase || "/audio/";
 
 		function clearActive() {
 			const activeCard = beatsContainer.querySelector(".ms-card.active");
 			activeCard?.classList.remove("active");
 			activeCard?.removeAttribute("aria-current");
-		}
-		function updateFloatingVisibility() {
-			const visible = playing || !headerVisible;
-			floatingPlayer.classList.toggle("is-visible", visible);
-			floatingPlayer.setAttribute("aria-hidden", String(!visible));
-			floatingPlayer.inert = !visible;
 		}
 		function updateControls() {
 			playButton.disabled = playing || !audioReady;
@@ -230,7 +218,6 @@
 			stopButton.disabled = !playing && current === 0;
 			floatingStopButton.disabled = !playing && current === 0;
 			instrumentSelect.disabled = playing;
-			updateFloatingVisibility();
 		}
 		function updatePosition(position) {
 			const value = position ? `${position} / ${beats.length}` : "";
@@ -274,26 +261,11 @@
 			updateControls();
 		}
 		playButton.addEventListener("click", start);
-		floatingPlayButton.addEventListener("click", start);
+		floatingPlayButton.addEventListener("click", start, { signal: floatingAbort.signal });
 		pauseButton.addEventListener("click", pause);
-		floatingPauseButton.addEventListener("click", pause);
+		floatingPauseButton.addEventListener("click", pause, { signal: floatingAbort.signal });
 		stopButton.addEventListener("click", stop);
-		floatingStopButton.addEventListener("click", stop);
-		if ("IntersectionObserver" in window) {
-			const headerObserver = new IntersectionObserver(([entry]) => {
-				headerVisible = entry?.isIntersecting ?? true;
-				updateFloatingVisibility();
-			}, { threshold: 0.1 });
-			headerObserver.observe(header);
-		} else {
-			const updateHeaderVisibility = () => {
-				const rect = header.getBoundingClientRect();
-				headerVisible = rect.bottom > 0 && rect.top < window.innerHeight;
-				updateFloatingVisibility();
-			};
-			window.addEventListener("scroll", updateHeaderVisibility, { passive: true });
-			updateHeaderVisibility();
-		}
+		floatingStopButton.addEventListener("click", stop, { signal: floatingAbort.signal });
 		instrumentSelect.addEventListener("change", async () => {
 			audioReady = false;
 			updateControls();
