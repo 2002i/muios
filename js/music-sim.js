@@ -1,4 +1,4 @@
-/* 按需加载并渲染 public/score 下的光遇琴谱。 */
+/* 按需加载并渲染 public/15 下的光遇琴谱。 */
 (function () {
 	"use strict";
 
