@@ -83,6 +83,7 @@ dist/
 ├── install/index.html
 ├── free-version/index.html
 ├── new-version/index.html
+├── plugins/index.html
 ├── archive/index.html
 ├── posts/index.html
 ├── README.md
