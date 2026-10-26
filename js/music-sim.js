@@ -89,7 +89,7 @@
 		return bank;
 	}
 
-	function playNotes(notes, bank) {
+	function playNotes(notes, bank, activeSources) {
 		const context = getAudioContext();
 		if (!context || !bank?.size) return;
 		notes.forEach((note) => {
@@ -101,6 +101,8 @@
 			source.buffer = buffer;
 			source.connect(gain);
 			gain.connect(context.destination);
+			activeSources?.add(source);
+			source.onended = () => activeSources?.delete(source);
 			source.start();
 		});
 	}
@@ -114,15 +116,13 @@
 			.music-sim-state{min-height:12rem;display:flex;align-items:center;justify-content:center;gap:.75rem;color:var(--text-secondary,#6b7280)}
 			.music-sim-spinner{width:1.5rem;height:1.5rem;border:3px solid rgba(127,127,127,.2);border-top-color:var(--primary,#7c3aed);border-radius:999px;animation:music-sim-spin .8s linear infinite}
 			@keyframes music-sim-spin{to{transform:rotate(360deg)}}
-			.ms-header{position:relative;z-index:20;display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:.75rem;margin-bottom:1rem;padding:.75rem;border:1px solid rgba(127,127,127,.12);border-radius:.9rem;background:color-mix(in oklch,var(--card-bg,#fff) 90%,transparent);backdrop-filter:blur(14px)}
-			.ms-title{display:flex;flex-direction:column;gap:.15rem}
-			.ms-heading{font-weight:800;color:var(--primary,#7c3aed)}
-			.ms-audio-state{font-size:.75rem;color:var(--text-secondary,#6b7280)}
-			.ms-controls{display:flex;align-items:center;gap:.5rem}
-			.ms-controls button,.ms-controls select{height:2.25rem;padding:0 .75rem;border:0;border-radius:.65rem;background:var(--enter-btn-bg,rgba(127,127,127,.12));color:var(--btn-content,inherit);font-weight:700;cursor:pointer;transition:.2s}
-			.ms-controls button:hover:not(:disabled){transform:translateY(-1px);background:var(--enter-btn-bg-hover,rgba(127,127,127,.18))}
-			.ms-controls button:disabled{opacity:.45;cursor:not-allowed}
-			.ms-status{min-width:4rem;text-align:right;font-size:.8rem;color:var(--text-secondary,#6b7280)}
+			.ms-header{display:inline-flex;align-items:center;flex:0 0 auto;margin:0;padding:0;border:0;background:none}
+			.music-sim-root>.ms-header{margin-bottom:.75rem}
+			.ms-instrument{min-height:2.25rem;max-width:6rem;padding:.4rem .65rem;border:1px solid var(--line-divider,rgba(127,127,127,.12));border-radius:.6rem;background:var(--btn-regular-bg,rgba(127,127,127,.12));color:var(--btn-content,inherit);font:700 .75rem system-ui,-apple-system,sans-serif;cursor:pointer}
+			.ms-instrument:hover:not(:disabled){background:var(--btn-regular-bg-hover,rgba(127,127,127,.18))}
+			.ms-instrument:focus-visible{outline:2px solid var(--primary,#7c3aed);outline-offset:3px}
+			.ms-instrument:disabled{opacity:.5;cursor:wait}
+			.ms-sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 			.ms-beats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:.45rem}
 			.ms-card{min-width:0;padding:.32rem;border:1px solid rgba(127,127,127,.12);border-radius:.65rem;background:var(--card-bg,transparent);transition:.2s}
 			.ms-card.active{transform:translateY(-3px);border-color:var(--primary,#7c3aed);box-shadow:0 10px 24px rgba(0,0,0,.12);outline:3px solid color-mix(in oklch,var(--primary,#7c3aed) 20%,transparent)}
@@ -131,12 +131,15 @@
 			.ms-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:.12rem}
 			.ms-key{aspect-ratio:1;min-width:0;display:grid;place-items:center;border:1px solid rgba(127,127,127,.12);border-radius:.28rem;background:var(--btn-regular-bg,rgba(127,127,127,.08));font-size:clamp(.42rem,.75vw,.62rem);font-weight:800}
 			.ms-key.active-key{background:var(--primary,#7c3aed);border-color:transparent;color:white;transform:scale(1.04)}
-			@media(max-width:480px){.ms-header{align-items:flex-start;gap:.55rem;margin-bottom:.75rem;padding:.6rem}.ms-title{gap:.05rem}.ms-heading{font-size:.9rem}.ms-audio-state{font-size:.68rem}.ms-controls{width:100%;gap:.25rem}.ms-controls button,.ms-controls select{height:2rem;padding:0 .45rem;border-radius:.55rem;font-size:.75rem}.ms-status{min-width:3.25rem;margin-left:auto;font-size:.7rem}.ms-beats{gap:.3rem}.ms-card{padding:.24rem;border-radius:.55rem}.ms-card-header{font-size:.52rem}.ms-grid{gap:.08rem}.ms-key{border-radius:.22rem;font-size:.42rem}}
+			@media(max-width:480px){.ms-beats{gap:.3rem}.ms-card{padding:.24rem;border-radius:.55rem}.ms-card-header{font-size:.52rem}.ms-grid{gap:.08rem}.ms-key{border-radius:.22rem;font-size:.42rem}}
 		`;
 		container.appendChild(style);
 	}
 
 	async function render(container, raw) {
+		if (!container.isConnected) return;
+		window.__musicSimCleanup?.();
+		container.__musicSimCleanup?.();
 		const beats = parseBeats(raw);
 		container.replaceChildren();
 		addStyles(container);
@@ -153,10 +156,15 @@
 		root.className = "music-sim-root";
 		const header = document.createElement("div");
 		header.className = "ms-header";
-		header.innerHTML = '<div class="ms-title"><div class="ms-heading">模拟光遇按键</div><div class="ms-audio-state">准备音色缓存…</div></div><div class="ms-controls"><select data-action="instrument" aria-label="选择音色"><option value="piano">钢琴</option><option value="guitar">吉他</option></select><button type="button" data-action="play" disabled>播放</button><button type="button" data-action="pause" disabled>暂停</button><button type="button" data-action="stop" disabled>停止</button><span class="ms-status"></span></div>';
+		header.innerHTML = '<select class="ms-instrument" data-action="instrument" aria-label="切换音色" title="切换音色" disabled><option value="piano">钢琴</option><option value="guitar">吉他</option></select><span class="ms-audio-state ms-sr-only" role="status" aria-live="polite">正在准备音色…</span>';
 		const beatsContainer = document.createElement("div");
 		beatsContainer.className = "ms-beats";
-		root.append(header, beatsContainer);
+		const soundSlot = container.closest("score-views")?.querySelector("[data-sound-slot]");
+		if (soundSlot) {
+			soundSlot.querySelector(".ms-header")?.remove();
+			soundSlot.appendChild(header);
+		} else root.appendChild(header);
+		root.appendChild(beatsContainer);
 		container.appendChild(root);
 
 		const keyLayout = "abcdefghijklmno".split("");
@@ -180,11 +188,7 @@
 			beatsContainer.appendChild(card);
 		});
 
-		const playButton = header.querySelector('[data-action="play"]');
-		const pauseButton = header.querySelector('[data-action="pause"]');
-		const stopButton = header.querySelector('[data-action="stop"]');
 		const instrumentSelect = header.querySelector('[data-action="instrument"]');
-		const status = header.querySelector(".ms-status");
 		const audioStatus = header.querySelector(".ms-audio-state");
 		const floatingControls = document.getElementById("floating-music-controls");
 		const floatingPlayButton = document.getElementById("floating-play-btn");
@@ -200,39 +204,73 @@
 		window.__musicSimFloatingAbort = floatingAbort;
 		let current = 0;
 		let playing = false;
+		let starting = false;
+		let playbackVersion = 0;
 		let timeoutId = 0;
 		let audioReady = false;
+		let audioLoading = false;
+		let disposed = false;
+		let loadVersion = 0;
+		let instrument = "piano";
 		let audioBank = new Map();
+		const activeSources = new Set();
 		const audioBaseUrl = container.dataset.audioBase || "/audio/";
+		const observer = new MutationObserver(() => { if (!container.isConnected) dispose(); });
+		window.__musicSimCleanup = dispose;
+		container.__musicSimCleanup = dispose;
+		observer.observe(document.body, { childList: true, subtree: true });
 
 		function clearActive() {
 			const activeCard = beatsContainer.querySelector(".ms-card.active");
 			activeCard?.classList.remove("active");
 			activeCard?.removeAttribute("aria-current");
 		}
+		function ownsControls() {
+			return !disposed && container.isConnected && window.__musicSimCleanup === dispose;
+		}
 		function updateControls() {
-			playButton.disabled = playing || !audioReady;
-			floatingPlayButton.disabled = playing || !audioReady;
-			pauseButton.disabled = !playing;
+			if (!ownsControls()) return;
+			floatingPlayButton.disabled = playing || starting || !audioReady || audioLoading;
 			floatingPauseButton.disabled = !playing;
-			stopButton.disabled = !playing && current === 0;
 			floatingStopButton.disabled = !playing && current === 0;
-			instrumentSelect.disabled = playing;
+			instrumentSelect.disabled = audioLoading;
+			instrumentSelect.setAttribute("aria-busy", String(audioLoading));
 		}
 		function updatePosition(position) {
-			const value = position ? `${position} / ${beats.length}` : "";
-			status.textContent = value;
-			floatingStatus.textContent = value;
+			if (ownsControls()) floatingStatus.textContent = position ? `${position} / ${beats.length}` : "";
+		}
+		function stopSources() {
+			activeSources.forEach((source) => { try { source.stop(); } catch {} });
+			activeSources.clear();
 		}
 		function stop() {
+			playbackVersion += 1;
 			window.clearTimeout(timeoutId);
+			stopSources();
 			playing = false;
 			current = 0;
 			clearActive();
 			updatePosition(0);
 			updateControls();
 		}
+		function dispose() {
+			if (disposed) return;
+			stop();
+			disposed = true;
+			loadVersion += 1;
+			floatingAbort.abort();
+			observer.disconnect();
+			header.remove();
+			if (container.__musicSimCleanup === dispose) delete container.__musicSimCleanup;
+			if (window.__musicSimCleanup === dispose) {
+				delete window.__musicSimCleanup;
+				floatingControls.hidden = true;
+				floatingPlayButton.disabled = floatingPauseButton.disabled = floatingStopButton.disabled = true;
+				floatingStatus.textContent = "";
+			}
+		}
 		function step() {
+			if (!ownsControls()) { dispose(); return; }
 			if (!playing || current >= beats.length) {
 				stop();
 				return;
@@ -243,40 +281,77 @@
 			card?.setAttribute("aria-current", "step");
 			card?.scrollIntoView({ behavior: "smooth", block: "center" });
 			updatePosition(current + 1);
-			playNotes(beats[current].notes, audioBank);
+			playNotes(beats[current].notes, audioBank, activeSources);
 			const duration = beats[current].durationMs;
 			current += 1;
 			timeoutId = window.setTimeout(step, duration);
 			updateControls();
 		}
 		async function start() {
-			if (playing) return;
-			await getAudioContext()?.resume();
-			playing = true;
-			step();
+			if (playing || starting || !ownsControls() || !audioReady || audioLoading) return;
+			starting = true;
+			updateControls();
+			const version = playbackVersion;
+			try {
+				await getAudioContext()?.resume();
+				if (!ownsControls() || version !== playbackVersion || !audioReady || audioLoading) return;
+				playing = true;
+				step();
+			} catch (error) {
+				if (ownsControls()) audioStatus.textContent = "声音未能启动，请再次点击播放。";
+				console.warn("音频启动失败", error);
+			} finally { starting = false; updateControls(); }
 		}
 		function pause() {
+			playbackVersion += 1;
 			playing = false;
 			window.clearTimeout(timeoutId);
+			stopSources();
 			updateControls();
 		}
-		playButton.addEventListener("click", start);
 		floatingPlayButton.addEventListener("click", start, { signal: floatingAbort.signal });
-		pauseButton.addEventListener("click", pause);
 		floatingPauseButton.addEventListener("click", pause, { signal: floatingAbort.signal });
-		stopButton.addEventListener("click", stop);
 		floatingStopButton.addEventListener("click", stop, { signal: floatingAbort.signal });
-		instrumentSelect.addEventListener("change", async () => {
-			audioReady = false;
+		async function loadInstrument() {
+			const version = ++loadVersion;
+			const requestedInstrument = instrumentSelect.value;
+			const resumeAfterLoad = playing;
+			if (playing) pause();
+			const resumeVersion = playbackVersion;
+			audioLoading = true;
+			instrumentSelect.title = `正在加载${requestedInstrument === "piano" ? "钢琴" : "吉他"}音色`;
 			updateControls();
-			audioBank = await preloadAudioBank(audioBaseUrl, instrumentSelect.value, audioStatus);
-			audioReady = true;
-			updateControls();
-		});
-
-		audioBank = await preloadAudioBank(audioBaseUrl, instrumentSelect.value, audioStatus);
-		audioReady = true;
-		updateControls();
+			try {
+				const bank = await preloadAudioBank(audioBaseUrl, requestedInstrument, audioStatus);
+				if (!ownsControls() || version !== loadVersion) return;
+				if (bank.size) {
+					audioBank = bank;
+					instrument = requestedInstrument;
+					audioReady = true;
+				} else {
+					audioBankPromises.delete(`${audioBaseUrl}|${requestedInstrument}`);
+					instrumentSelect.value = instrument;
+					audioReady = audioBank.size > 0;
+					audioStatus.textContent = audioReady ? "音色加载失败，继续使用原音色。" : "音色暂时无法加载，请稍后重新选择。";
+				}
+			} catch (error) {
+				if (!ownsControls() || version !== loadVersion) return;
+				instrumentSelect.value = instrument;
+				audioReady = audioBank.size > 0;
+				audioStatus.textContent = "音色加载失败，请稍后重试。";
+				console.warn("音色切换失败", error);
+			} finally {
+				if (ownsControls() && version === loadVersion) {
+					audioLoading = false;
+					instrumentSelect.title = `切换音色：${instrumentSelect.value === "piano" ? "钢琴" : "吉他"}`;
+					updateControls();
+					if (resumeAfterLoad && audioReady && resumeVersion === playbackVersion) void start();
+				}
+			}
+		}
+		instrumentSelect.addEventListener("change", loadInstrument, { signal: floatingAbort.signal });
+		updatePosition(0);
+		await loadInstrument();
 	}
 
 	async function initializeElement(container) {
@@ -295,8 +370,9 @@
 				if (!response.ok) throw new Error(`HTTP ${response.status}`);
 				raw = await response.text();
 			}
+			if (!container.isConnected) return;
 			await render(container, raw);
-			container.dataset.musicSimState = "ready";
+			if (container.isConnected) container.dataset.musicSimState = "ready";
 		} catch (error) {
 			console.error("琴谱加载失败", error);
 			container.innerHTML = '<div class="music-sim-state">琴谱文件加载失败，请稍后重试。</div>';
