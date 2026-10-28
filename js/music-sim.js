@@ -89,12 +89,14 @@
 		return bank;
 	}
 
-	function playNotes(notes, bank, activeSources) {
+	function playNotes(notes, bank, activeSources, offsetMs = 0) {
 		const context = getAudioContext();
 		if (!context || !bank?.size) return;
 		notes.forEach((note) => {
 			const buffer = bank.get(note);
 			if (!buffer) return;
+			const offset = Math.max(0, offsetMs / 1000);
+			if (offset >= buffer.duration) return;
 			const source = context.createBufferSource();
 			const gain = context.createGain();
 			gain.gain.value = 0.7;
@@ -103,9 +105,191 @@
 			gain.connect(context.destination);
 			activeSources?.add(source);
 			source.onended = () => activeSources?.delete(source);
-			source.start();
+			source.start(0, offset);
 		});
 	}
+
+
+	// The audio session belongs to the document, not a particular score view.
+	// Swup can replace every detail node while this transport keeps playing.
+	function createPlayer() {
+		let source = { src: "", title: "", audioBase: "/audio/" };
+		let beats = [];
+		let beatStarts = [0];
+		let durationMs = 0;
+		let current = 0;
+		let playbackState = "stopped";
+		let elapsedMs = 0;
+		let anchorMs = 0;
+		let timeoutId = 0;
+		let lastPlayedIndex = -1;
+		let instrument = "piano";
+		let bankInstrument = "";
+		let bankBase = "";
+		let audioBank = new Map();
+		let loading = false;
+		let audioLoading = false;
+		let error = "";
+		let requestVersion = 0;
+		let controlVersion = 0;
+		let instrumentVersion = 0;
+		let request;
+		let pendingLoad;
+		const listeners = new Set();
+		const activeSources = new Set();
+		const clockMs = () => (getAudioContext()?.currentTime ?? performance.now() / 1000) * 1000;
+		const positionMs = () => Math.min(durationMs, Math.max(0, elapsedMs + (playbackState === "playing" ? clockMs() - anchorMs : 0)));
+		function snapshot() {
+			return Object.freeze({ state: playbackState, index: current, elapsedMs: positionMs(), durationMs,
+				src: source.src, title: source.title, instrument, loading: loading || audioLoading, error, beatsCount: beats.length });
+		}
+		function publish() {
+			const value = snapshot();
+			for (const listener of [...listeners]) {
+				try { listener(value); } catch (cause) { console.error("播放器状态监听失败", cause); }
+			}
+			document.dispatchEvent(new CustomEvent("score:player-state", { detail: value }));
+		}
+		function stopSources() {
+			activeSources.forEach((node) => { try { node.stop(); } catch {} });
+			activeSources.clear();
+		}
+		function stopTimer() { window.clearTimeout(timeoutId); stopSources(); }
+		function pause() {
+			controlVersion += 1;
+			if (playbackState !== "playing") return;
+			elapsedMs = positionMs();
+			playbackState = "paused";
+			lastPlayedIndex = -1;
+			stopTimer(); publish();
+		}
+		function stop() {
+			controlVersion += 1;
+			stopTimer(); playbackState = "stopped"; elapsedMs = 0; current = 0; lastPlayedIndex = -1;
+			publish();
+		}
+		function step() {
+			if (playbackState !== "playing") return;
+			const position = positionMs();
+			if (position >= durationMs) {
+				playbackState = "ended"; elapsedMs = durationMs; current = Math.max(0, beats.length - 1);
+				stopTimer(); publish(); return;
+			}
+			while (current < beats.length - 1 && position >= beatStarts[current + 1]) current += 1;
+			if (lastPlayedIndex !== current) {
+				playNotes(beats[current].notes, audioBank, activeSources, position - beatStarts[current]);
+				lastPlayedIndex = current;
+			}
+			// Schedule before publishing: an ended/queue callback may replace this
+			// session synchronously, so there must be no work after notification.
+			timeoutId = window.setTimeout(step, Math.max(1, beatStarts[current + 1] - position));
+			publish();
+		}
+		async function ensureBank() {
+			for (;;) {
+				const selected = instrument;
+				const base = source.audioBase;
+				if (audioBank.size && bankInstrument === selected && bankBase === base) return;
+				const bank = await preloadAudioBank(base, selected, { textContent: "" });
+				if (selected !== instrument || base !== source.audioBase) continue;
+				if (!bank.size) {
+					audioBankPromises.delete(`${base}|${selected}`);
+					throw new Error("音色暂时无法加载，请重试。");
+				}
+				audioBank = bank; bankInstrument = selected; bankBase = base; return;
+			}
+		}
+		async function play() {
+			if (playbackState === "playing" || loading || audioLoading || !beats.length) return;
+			const version = ++controlVersion;
+			try {
+				const context = getAudioContext();
+				if (!context) throw new Error("当前浏览器不支持音频播放。");
+				await context.resume();
+				if (version !== controlVersion || loading || audioLoading || !beats.length) return;
+				if (!audioBank.size) await ensureBank();
+				if (version !== controlVersion) return;
+				if (playbackState === "ended") { elapsedMs = 0; current = 0; lastPlayedIndex = -1; }
+				error = ""; anchorMs = clockMs(); playbackState = "playing"; step();
+			} catch (cause) {
+				if (version !== controlVersion) return;
+				error = cause instanceof Error ? cause.message : "声音未能启动，请再次点击播放。";
+				publish(); throw cause;
+			}
+		}
+		async function load(item, options = {}) {
+			const src = String(item?.src || "");
+			if (!src) throw new Error("琴谱链接为空。");
+			// Unlock iOS audio from the original click, before awaiting network I/O.
+			if (options.autoplay) void getAudioContext()?.resume().catch(() => {});
+			if (source.src === src && pendingLoad && loading) {
+				const version = requestVersion;
+				const intent = options.autoplay ? ++controlVersion : controlVersion;
+				await pendingLoad;
+				if (version === requestVersion && intent === controlVersion && options.autoplay) await play();
+				return;
+			}
+			if (source.src === src && beats.length && !loading && !error) {
+				if (options.autoplay) await play();
+				return;
+			}
+			const version = ++requestVersion;
+			const intent = ++controlVersion;
+			request?.abort(); request = new AbortController();
+			const signal = request.signal;
+			stopTimer(); playbackState = "stopped"; elapsedMs = 0; current = 0; lastPlayedIndex = -1;
+			beats = []; beatStarts = [0]; durationMs = 0;
+			source = { src, title: String(item.title || "未命名琴谱"), audioBase: String(item.audioBase || "/audio/") };
+			if (!source.audioBase.endsWith("/")) source.audioBase += "/";
+			loading = true; error = ""; publish();
+			pendingLoad = (async () => {
+				const timeout = window.setTimeout(() => request?.signal === signal && request.abort(), 15000);
+				try {
+					const response = await fetch(src, { signal, cache: "force-cache" });
+					if (!response.ok) throw new Error(`琴谱读取失败（HTTP ${response.status}）`);
+					const parsed = parseBeats(await response.text());
+					if (!parsed.length) throw new Error("这份琴谱没有可播放的音符。");
+					if (version !== requestVersion) return;
+					beats = parsed;
+					beatStarts = [0]; beats.forEach((beat) => beatStarts.push(beatStarts.at(-1) + beat.durationMs));
+					durationMs = beatStarts.at(-1);
+					await ensureBank();
+					if (version !== requestVersion) return;
+					loading = false; publish();
+					if (options.autoplay && intent === controlVersion) await play();
+				} catch (cause) {
+					if (version !== requestVersion) return;
+					loading = false; error = cause?.name === "AbortError" ? "琴谱读取超时，请重试。" : cause instanceof Error ? cause.message : "琴谱加载失败，请重试。";
+					publish(); throw cause;
+				} finally { window.clearTimeout(timeout); if (version === requestVersion) pendingLoad = undefined; }
+			})();
+			await pendingLoad;
+		}
+		async function setInstrument(value) {
+			if (value !== "piano" && value !== "guitar") return;
+			if (instrument === value && bankInstrument === value && audioBank.size) return;
+			const version = ++instrumentVersion;
+			const previous = instrument;
+			const resumeAfterLoad = playbackState === "playing";
+			if (resumeAfterLoad) pause();
+			const intent = controlVersion;
+			instrument = value; audioLoading = true; error = ""; publish();
+			try {
+				await ensureBank();
+				if (version !== instrumentVersion) return;
+				audioLoading = false; publish();
+				if (resumeAfterLoad && intent === controlVersion) await play();
+			} catch (cause) {
+				if (version !== instrumentVersion) return;
+				instrument = previous; audioLoading = false;
+				error = cause instanceof Error ? cause.message : "音色加载失败，请重试。";
+				publish(); throw cause;
+			}
+		}
+		return Object.freeze({ load, play, pause, stop, setInstrument, getSnapshot: snapshot,
+			subscribe(listener) { listeners.add(listener); listener(snapshot()); return () => listeners.delete(listener); } });
+	}
+	const player = createPlayer();
 
 	function addStyles(container) {
 		if (container.querySelector("style[data-music-sim-style]")) return;
@@ -138,7 +322,6 @@
 
 	async function render(container, raw) {
 		if (!container.isConnected) return;
-		window.__musicSimCleanup?.();
 		container.__musicSimCleanup?.();
 		const beats = parseBeats(raw);
 		container.replaceChildren();
@@ -190,168 +373,58 @@
 
 		const instrumentSelect = header.querySelector('[data-action="instrument"]');
 		const audioStatus = header.querySelector(".ms-audio-state");
-		const floatingControls = document.getElementById("floating-music-controls");
-		const floatingPlayButton = document.getElementById("floating-play-btn");
-		const floatingPauseButton = document.getElementById("floating-pause-btn");
-		const floatingStopButton = document.getElementById("floating-stop-btn");
-		const floatingStatus = document.getElementById("floating-music-status");
-		if (!floatingControls || !floatingPlayButton || !floatingPauseButton || !floatingStopButton || !floatingStatus) {
-			throw new Error("悬浮播放组件未加载");
-		}
-		floatingControls.hidden = false;
-		window.__musicSimFloatingAbort?.abort();
-		const floatingAbort = new AbortController();
-		window.__musicSimFloatingAbort = floatingAbort;
-		let current = 0;
-		let playing = false;
-		let starting = false;
-		let playbackVersion = 0;
-		let timeoutId = 0;
-		let audioReady = false;
-		let audioLoading = false;
+		const playbackHost = container.closest("score-views") || container;
+		const events = new AbortController();
 		let disposed = false;
-		let loadVersion = 0;
-		let instrument = "piano";
-		let audioBank = new Map();
-		const activeSources = new Set();
-		const audioBaseUrl = container.dataset.audioBase || "/audio/";
+		let activeIndex = -1;
+		const localSrc = container.dataset.src || "";
 		const observer = new MutationObserver(() => { if (!container.isConnected) dispose(); });
-		window.__musicSimCleanup = dispose;
-		container.__musicSimCleanup = dispose;
-		observer.observe(document.body, { childList: true, subtree: true });
-
+		function matchingSnapshot() {
+			const value = player.getSnapshot();
+			if (localSrc && value.src === localSrc) return value;
+			return Object.freeze({ state: "stopped", index: 0, elapsedMs: 0,
+				durationMs: beats.reduce((total, beat) => total + beat.durationMs, 0), src: localSrc,
+				title: container.dataset.title || "", instrument: value.instrument, loading: false, error: "", beatsCount: beats.length });
+		}
 		function clearActive() {
-			const activeCard = beatsContainer.querySelector(".ms-card.active");
-			activeCard?.classList.remove("active");
-			activeCard?.removeAttribute("aria-current");
+			const card = beatsContainer.querySelector(".ms-card.active");
+			card?.classList.remove("active"); card?.removeAttribute("aria-current");
 		}
-		function ownsControls() {
-			return !disposed && container.isConnected && window.__musicSimCleanup === dispose;
+		function publishPlayback() {
+			if (disposed) return;
+			container.dispatchEvent(new CustomEvent("score:playback", { bubbles: true, detail: matchingSnapshot() }));
 		}
-		function updateControls() {
-			if (!ownsControls()) return;
-			floatingPlayButton.disabled = playing || starting || !audioReady || audioLoading;
-			floatingPauseButton.disabled = !playing;
-			floatingStopButton.disabled = !playing && current === 0;
-			instrumentSelect.disabled = audioLoading;
-			instrumentSelect.setAttribute("aria-busy", String(audioLoading));
-		}
-		function updatePosition(position) {
-			if (ownsControls()) floatingStatus.textContent = position ? `${position} / ${beats.length}` : "";
-		}
-		function stopSources() {
-			activeSources.forEach((source) => { try { source.stop(); } catch {} });
-			activeSources.clear();
-		}
-		function stop() {
-			playbackVersion += 1;
-			window.clearTimeout(timeoutId);
-			stopSources();
-			playing = false;
-			current = 0;
-			clearActive();
-			updatePosition(0);
-			updateControls();
+		function update(snapshot) {
+			if (disposed) return;
+			instrumentSelect.disabled = snapshot.loading;
+			instrumentSelect.value = snapshot.instrument;
+			instrumentSelect.title = `切换音色：${snapshot.instrument === "piano" ? "钢琴" : "吉他"}`;
+			instrumentSelect.setAttribute("aria-busy", String(snapshot.loading));
+			audioStatus.textContent = snapshot.error || (snapshot.loading ? "正在准备播放器…" : "");
+			const active = localSrc && snapshot.src === localSrc && ["playing", "paused"].includes(snapshot.state);
+			if (!active) { clearActive(); activeIndex = -1; }
+			else if (activeIndex !== snapshot.index) {
+				clearActive(); activeIndex = snapshot.index;
+				const card = beatsContainer.querySelector(`[data-index="${activeIndex}"]`);
+				card?.classList.add("active"); card?.setAttribute("aria-current", "step");
+				if (snapshot.state === "playing" && playbackHost.dataset.currentView !== "number" && card?.getClientRects().length) card.scrollIntoView({ behavior: "smooth", block: "center" });
+			}
+			publishPlayback();
 		}
 		function dispose() {
 			if (disposed) return;
-			stop();
-			disposed = true;
-			loadVersion += 1;
-			floatingAbort.abort();
-			observer.disconnect();
-			header.remove();
+			disposed = true; unsubscribe(); events.abort(); observer.disconnect(); header.remove();
+			delete container.__musicSimPlayback;
 			if (container.__musicSimCleanup === dispose) delete container.__musicSimCleanup;
-			if (window.__musicSimCleanup === dispose) {
-				delete window.__musicSimCleanup;
-				floatingControls.hidden = true;
-				floatingPlayButton.disabled = floatingPauseButton.disabled = floatingStopButton.disabled = true;
-				floatingStatus.textContent = "";
-			}
 		}
-		function step() {
-			if (!ownsControls()) { dispose(); return; }
-			if (!playing || current >= beats.length) {
-				stop();
-				return;
-			}
-			clearActive();
-			const card = beatsContainer.querySelector(`[data-index="${current}"]`);
-			card?.classList.add("active");
-			card?.setAttribute("aria-current", "step");
-			card?.scrollIntoView({ behavior: "smooth", block: "center" });
-			updatePosition(current + 1);
-			playNotes(beats[current].notes, audioBank, activeSources);
-			const duration = beats[current].durationMs;
-			current += 1;
-			timeoutId = window.setTimeout(step, duration);
-			updateControls();
-		}
-		async function start() {
-			if (playing || starting || !ownsControls() || !audioReady || audioLoading) return;
-			starting = true;
-			updateControls();
-			const version = playbackVersion;
-			try {
-				await getAudioContext()?.resume();
-				if (!ownsControls() || version !== playbackVersion || !audioReady || audioLoading) return;
-				playing = true;
-				step();
-			} catch (error) {
-				if (ownsControls()) audioStatus.textContent = "声音未能启动，请再次点击播放。";
-				console.warn("音频启动失败", error);
-			} finally { starting = false; updateControls(); }
-		}
-		function pause() {
-			playbackVersion += 1;
-			playing = false;
-			window.clearTimeout(timeoutId);
-			stopSources();
-			updateControls();
-		}
-		floatingPlayButton.addEventListener("click", start, { signal: floatingAbort.signal });
-		floatingPauseButton.addEventListener("click", pause, { signal: floatingAbort.signal });
-		floatingStopButton.addEventListener("click", stop, { signal: floatingAbort.signal });
-		async function loadInstrument() {
-			const version = ++loadVersion;
-			const requestedInstrument = instrumentSelect.value;
-			const resumeAfterLoad = playing;
-			if (playing) pause();
-			const resumeVersion = playbackVersion;
-			audioLoading = true;
-			instrumentSelect.title = `正在加载${requestedInstrument === "piano" ? "钢琴" : "吉他"}音色`;
-			updateControls();
-			try {
-				const bank = await preloadAudioBank(audioBaseUrl, requestedInstrument, audioStatus);
-				if (!ownsControls() || version !== loadVersion) return;
-				if (bank.size) {
-					audioBank = bank;
-					instrument = requestedInstrument;
-					audioReady = true;
-				} else {
-					audioBankPromises.delete(`${audioBaseUrl}|${requestedInstrument}`);
-					instrumentSelect.value = instrument;
-					audioReady = audioBank.size > 0;
-					audioStatus.textContent = audioReady ? "音色加载失败，继续使用原音色。" : "音色暂时无法加载，请稍后重新选择。";
-				}
-			} catch (error) {
-				if (!ownsControls() || version !== loadVersion) return;
-				instrumentSelect.value = instrument;
-				audioReady = audioBank.size > 0;
-				audioStatus.textContent = "音色加载失败，请稍后重试。";
-				console.warn("音色切换失败", error);
-			} finally {
-				if (ownsControls() && version === loadVersion) {
-					audioLoading = false;
-					instrumentSelect.title = `切换音色：${instrumentSelect.value === "piano" ? "钢琴" : "吉他"}`;
-					updateControls();
-					if (resumeAfterLoad && audioReady && resumeVersion === playbackVersion) void start();
-				}
-			}
-		}
-		instrumentSelect.addEventListener("change", loadInstrument, { signal: floatingAbort.signal });
-		updatePosition(0);
-		await loadInstrument();
+		Object.defineProperty(container, "__musicSimPlayback", { configurable: true, get: matchingSnapshot });
+		const unsubscribe = player.subscribe(update);
+		container.__musicSimCleanup = dispose;
+		observer.observe(document.body, { childList: true, subtree: true });
+		playbackHost.addEventListener("score:playback-request", publishPlayback, { signal: events.signal });
+		instrumentSelect.addEventListener("change", () => {
+			void player.setInstrument(instrumentSelect.value).catch(() => {});
+		}, { signal: events.signal });
 	}
 
 	async function initializeElement(container) {
@@ -397,7 +470,7 @@
 		pending.forEach((element) => observer.observe(element));
 	}
 
-	window.MusicSim = { cleanMusicData, init, parseBeats, render };
+	window.MusicSim = { cleanMusicData, init, parseBeats, render, player };
 	window.__musicSim_init = init;
 	if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", () => init(document), { once: true });
 	else init(document);
